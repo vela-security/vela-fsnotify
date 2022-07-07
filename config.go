@@ -1,6 +1,7 @@
 package fsnotify
 
 import (
+	cond "github.com/vela-security/vela-cond"
 	"github.com/vela-security/vela-public/auxlib"
 	"github.com/vela-security/vela-public/lua"
 	"github.com/vela-security/vela-public/pipe"
@@ -9,6 +10,7 @@ import (
 type config struct {
 	name  string
 	path  []string
+	match *cond.Cond
 	pipe  *pipe.Px
 	onErr *pipe.Px
 	co    *lua.LState

@@ -3,9 +3,10 @@ package fsnotify
 import (
 	"context"
 	"github.com/fsnotify/fsnotify"
+	cond "github.com/vela-security/vela-cond"
 	"github.com/vela-security/vela-public/catch"
 	"github.com/vela-security/vela-public/lua"
-	"github.com/vela-security/vela-public/pipe"
+	"time"
 )
 
 type watch struct {
@@ -24,8 +25,17 @@ func (w *watch) Name() string {
 	return w.cfg.name
 }
 
-func (w *watch) pipeEv(ev fsnotify.Event) {
-	w.cfg.pipe.Do(event(ev), w.cfg.co, func(err error) {
+func (w *watch) filter(ev event) bool {
+	if w.cfg.match == nil {
+		return true
+	}
+
+	return w.cfg.match.Match(ev, cond.WithCo(w.cfg.co))
+}
+
+func (w *watch) pipeEv(ev event) {
+
+	w.cfg.pipe.Do(ev, w.cfg.co, func(err error) {
 		xEnv.Errorf("%s pipe inotify fail %v", w.Name(), err)
 	})
 }
@@ -51,17 +61,25 @@ func (w *watch) Start() error {
 	w.fw = watcher
 	w.ctx = ctx
 	w.cancel = cancel
-
 	xEnv.Spawn(0, func() {
+		old := event{}
+
 		for {
 			select {
 			case <-w.ctx.Done():
 				xEnv.Errorf("%s exit", w.Name())
 				return
-			case ev, ok := <-w.fw.Events:
+			case fevent, ok := <-w.fw.Events:
 				if !ok {
 					return
 				}
+
+				ev := event{time.Now(), fevent}
+				if !w.filter(ev) || ev.dup(old) {
+					continue
+				}
+
+				old = ev
 				w.pipeEv(ev)
 
 			case e, ok := <-w.fw.Errors:
@@ -112,27 +130,6 @@ func (w *watch) append(filename string) {
 	w.cfg.path = append(w.cfg.path, filename)
 }
 
-func (w *watch) lAdd(L *lua.LState) int {
-	n := L.GetTop()
-	if n == 0 {
-		return 0
-	}
-	ctc := catch.New()
-	for i := 1; i <= n; i++ {
-		if filename := L.IsString(i); filename != "" {
-			w.append(filename)
-			ctc.Try(filename, w.fw.Add(filename))
-		}
-	}
-
-	if e := ctc.Wrap(); e == nil {
-		return 0
-	} else {
-		L.Push(lua.S2L(e.Error()))
-		return 1
-	}
-}
-
 func (w *watch) clean(L *lua.LState) int {
 	if w.fw == nil {
 		return 0
@@ -148,36 +145,4 @@ func (w *watch) clean(L *lua.LState) int {
 	}
 
 	return 0
-}
-
-func (w *watch) pipeL(L *lua.LState) int {
-	w.cfg.pipe.CheckMany(L, pipe.Seek(0))
-	return 0
-}
-
-func (w *watch) onErrL(L *lua.LState) int {
-	w.cfg.pipe.CheckMany(L, pipe.Seek(0))
-	return 0
-}
-
-func (w *watch) startL(L *lua.LState) int {
-	xEnv.Start(L, w).From(w.CodeVM()).Do()
-	return 0
-}
-
-func (w *watch) Index(L *lua.LState, key string) lua.LValue {
-	switch key {
-	case "start":
-		return lua.NewFunction(w.startL)
-	case "pipe":
-		return lua.NewFunction(w.pipeL)
-	case "on_err":
-		return lua.NewFunction(w.onErrL)
-	case "add":
-		return L.NewFunction(w.lAdd)
-	case "clean":
-		return L.NewFunction(w.clean)
-	}
-
-	return lua.LNil
 }
